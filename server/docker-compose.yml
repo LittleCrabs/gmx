@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  gmx-server:
+    build: .
+    container_name: gmx-server
+    ports:
+      - "5050:5050"
+    volumes:
+      - gmx-data:/app/instance
+    environment:
+      - FLASK_ENV=production
+    restart: unless-stopped
+
+volumes:
+  gmx-data:

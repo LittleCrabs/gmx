@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+dist-electron/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Database
+*.db
+instance/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+*.local
+
+# Build artifacts
+*.exe
+*.spec
