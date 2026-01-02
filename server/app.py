@@ -35,7 +35,7 @@ class User(db.Model):
     password_hash = db.Column(db.String(256), nullable=False)
     is_admin = db.Column(db.Boolean, default=False)
     is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.datetime.now)
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -49,7 +49,7 @@ class EmailConfig(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     description = db.Column(db.String(256))
     is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.datetime.now)
 
 
 class IMAPConfig(db.Model):
@@ -71,7 +71,7 @@ class SNMapping(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     serial_number = db.Column(db.String(80), unique=True, nullable=False)
     company_name = db.Column(db.String(256), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.datetime.now)
 
 
 class EmailRecord(db.Model):
@@ -80,7 +80,7 @@ class EmailRecord(db.Model):
     message_id = db.Column(db.String(100), unique=True, nullable=False)
     mail_date = db.Column(db.String(100))
     product_name = db.Column(db.String(200))
-    serial_number = db.Column(db.String(80))
+    serial_number = db.Column(db.String(80), index=True)  # 添加索引便于查询
     ipv4_address = db.Column(db.String(50))
     billing_meter_1 = db.Column(db.Integer, default=0)
     billing_meter_2 = db.Column(db.Integer, default=0)
@@ -88,7 +88,8 @@ class EmailRecord(db.Model):
     billing_meter_4 = db.Column(db.Integer, default=0)
     billing_meter_5 = db.Column(db.Integer, default=0)
     consumables = db.Column(db.Text)  # JSON格式存储耗材列表
-    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.datetime.now)
+    
 
 
 # ==================== 认证装饰器 ====================
@@ -658,20 +659,8 @@ def fetch_emails(current_user):
         
         print(f"[Fetch] Added {new_count} new records")
         
-        # 返回所有缓存的记录
-        all_records = EmailRecord.query.order_by(EmailRecord.mail_date.desc()).all()
-        records = [{
-            'message_id': r.message_id,
-            'mail_date': r.mail_date,
-            'product_name': r.product_name,
-            'serial_number': r.serial_number,
-            'ipv4_address': r.ipv4_address,
-            'billing_meter_1': r.billing_meter_1,
-            'billing_meter_2': r.billing_meter_2,
-            'billing_meter_3': r.billing_meter_3,
-            'billing_meter_4': r.billing_meter_4,
-            'billing_meter_5': r.billing_meter_5
-        } for r in all_records]
+        # 返回按serial_number去重的最新记录
+        records = get_latest_records_by_sn()
         
         return jsonify({'records': records, 'count': len(records), 'new_count': new_count})
     except Exception as e:
@@ -679,12 +668,10 @@ def fetch_emails(current_user):
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/api/email-records', methods=['GET'])
-@token_required
-def get_email_records(current_user):
-    """直接获取缓存的邮件记录，不请求IMAP"""
-    records = EmailRecord.query.order_by(EmailRecord.mail_date.desc()).all()
-    return jsonify([{
+def get_latest_records_by_sn():
+    """获取每个serial_number的最新记录（返回字典列表）"""
+    records = get_latest_email_records_by_sn()
+    return [{
         'message_id': r.message_id,
         'mail_date': r.mail_date,
         'product_name': r.product_name,
@@ -695,7 +682,37 @@ def get_email_records(current_user):
         'billing_meter_3': r.billing_meter_3,
         'billing_meter_4': r.billing_meter_4,
         'billing_meter_5': r.billing_meter_5
-    } for r in records])
+    } for r in records]
+
+
+def get_latest_email_records_by_sn():
+    """获取每个serial_number的最新记录（返回EmailRecord对象列表）"""
+    from sqlalchemy import func
+    
+    # 子查询：获取每个serial_number的最大id（最新记录）
+    subquery = db.session.query(
+        EmailRecord.serial_number,
+        func.max(EmailRecord.id).label('max_id')
+    ).filter(
+        EmailRecord.serial_number.isnot(None)
+    ).group_by(EmailRecord.serial_number).subquery()
+    
+    # 主查询：获取这些最新记录的完整信息
+    records = db.session.query(EmailRecord).join(
+        subquery,
+        (EmailRecord.serial_number == subquery.c.serial_number) & 
+        (EmailRecord.id == subquery.c.max_id)
+    ).order_by(EmailRecord.mail_date.desc()).all()
+    
+    return records
+
+
+@app.route('/api/email-records', methods=['GET'])
+@token_required
+def get_email_records(current_user):
+    """获取按serial_number去重的最新邮件记录"""
+    records = get_latest_records_by_sn()
+    return jsonify(records)
 
 
 # ==================== Excel导出API ====================
@@ -714,8 +731,8 @@ HEADER_FONT = Font(color="FFFFFF", bold=True, name="Courier New")
 @app.route('/api/export/billing-records', methods=['GET'])
 @token_required
 def export_billing_records(current_user):
-    """导出原始数据Excel"""
-    records = EmailRecord.query.order_by(EmailRecord.mail_date.desc()).all()
+    """导出按serial_number去重的最新数据Excel"""
+    records = get_latest_email_records_by_sn()
     
     wb = Workbook()
     ws = wb.active
@@ -763,27 +780,10 @@ def export_billing_records(current_user):
 @token_required
 def export_printer_report(current_user):
     """导出打印机状态报告Excel（每个打印机一个sheet）"""
-    records = EmailRecord.query.all()
+    latest_records = get_latest_email_records_by_sn()
     
-    if not records:
+    if not latest_records:
         return jsonify({'error': 'No data to export'}), 400
-    
-    # 按日期排序，获取每台打印机的最新记录
-    def parse_mail_date(date_str):
-        try:
-            return parsedate_to_datetime(date_str)
-        except:
-            return datetime.datetime.min
-    
-    records_sorted = sorted(records, key=lambda r: parse_mail_date(r.mail_date or ''), reverse=True)
-    
-    latest_records = []
-    seen_devices = set()
-    for r in records_sorted:
-        key = (r.product_name, r.serial_number)
-        if key not in seen_devices:
-            seen_devices.add(key)
-            latest_records.append(r)
     
     wb = Workbook()
     center_align = Alignment(horizontal='center', vertical='center')
